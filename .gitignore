@@ -1,0 +1,27 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Datasets (large raw CSVs and processed JSONL)
+dataset/twcs.csv
+/data/
+
+# Python cache & virtual environments
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Development planning documents
+TECHNICAL_DOCUMENTATION.md
+implementation_plan.md
+context.md
+LANGGRAPH_ARCHITECTURE.md
