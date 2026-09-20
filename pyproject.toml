@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "elasticsearch>=9.5.1",
+    "fastapi>=0.115.0",
     "langgraph>=1.2.11",
     "litellm>=1.100.1",
     "pandas>=3.0.5",
@@ -14,7 +15,9 @@ dependencies = [
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     "rich>=15.0.0",
+    "sqlalchemy>=2.0.0",
     "tqdm>=4.70.0",
+    "uvicorn[standard]>=0.34.0",
 ]
 
 [dependency-groups]

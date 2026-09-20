@@ -20,6 +20,13 @@ __pycache__/
 htmlcov/
 .ipynb_checkpoints/
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# UI database (runtime)
+data/support.db
+
 # Development planning documents
 TECHNICAL_DOCUMENTATION.md
 implementation_plan.md

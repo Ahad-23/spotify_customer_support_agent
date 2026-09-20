@@ -130,6 +130,46 @@ To build the knowledge base from scratch:
 
 ---
 
+## Web UI
+
+The project includes a chat UI with Human-in-the-Loop (HITL) handoff for support agents.
+
+### Architecture
+
+- **Backend**: FastAPI + SQLite + WebSockets (`backend/`)
+- **Frontend**: React + Vite + Tailwind (`frontend/`)
+- **Agent layer**: Unchanged — UI calls `run_support_agent()` from `src/agent/graph.py`
+
+### Screens
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Customer chat — AI responses until HITL is triggered |
+| `/agent` | Agent console — pending handoff queue, live takeover |
+
+When HITL triggers (frustration, human request, low RAG confidence), the customer sees a waiting state and agents receive a real-time notification. An agent claims the ticket and takes over the conversation.
+
+### Run the UI
+
+**Terminal 1 — API server:**
+```bash
+uv sync
+uv run uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+**Terminal 2 — Frontend dev server:**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) for customer chat and [http://localhost:5173/agent](http://localhost:5173/agent) for the agent console.
+
+To test HITL, open both tabs. From the customer chat, try: *"I demand to speak to a real human representative right now."*
+
+---
+
 ## Usage
 
 ### Interactive CLI
