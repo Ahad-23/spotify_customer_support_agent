@@ -1,6 +1,6 @@
 # SpotifyCares AI Support Platform
 
-A Case-Based Reasoning (CBR) customer support system with real-time Human-in-the-Loop (HITL) handoff. Powered by **LangGraph**, **Elasticsearch Serverless** hybrid search, **FastAPI + WebSockets**, and **React 19**.
+A Case-Based Reasoning (CBR) customer support platform with real-time Human-in-the-Loop (HITL) handoff. Powered by **LangGraph**, **Elasticsearch Serverless** hybrid search, **FastAPI + WebSockets**, **React 19**, and **React Native / Expo**.
 
 ---
 
@@ -8,14 +8,14 @@ A Case-Based Reasoning (CBR) customer support system with real-time Human-in-the
 
 ```mermaid
 flowchart TD
-    subgraph Clients["Frontend (React 19 + Vite)"]
-        CC["Customer Chat (/)\n• Streaming messages\n• Wait queue state"]
-        AC["Agent Console (/agent)\n• Live ticket queue\n• One-click takeover"]
+    subgraph Clients["Frontend Clients"]
+        WEB["React 19 Web App (Vite)\n• Customer Chat (/)\n• Agent Console (/agent)"]
+        MOB["React Native Mobile App (Expo)\n• Customer Chat Screen\n• Agent Dashboard Screen"]
     end
 
     subgraph API["Backend (FastAPI + SQLite)"]
-        REST["REST Endpoints\n/api/sessions, /api/agent"]
-        WS["WebSocket Manager\n/ws/chat/{id}, /ws/agent"]
+        REST["REST Endpoints\n/api/sessions, /api/agents"]
+        WS["WebSocket Manager\n/ws/sessions/{id}, /ws/agents"]
         DB[(SQLite / support.db\nSessions, Messages, Tickets)]
     end
 
@@ -26,8 +26,8 @@ flowchart TD
         HITL["HITL Escalation Node\n• Structured Ticket Dispatch\n• SPOTIFY-T2-#####"]
     end
 
-    CC <-->|REST & WS| API
-    AC <-->|REST & WS| API
+    WEB <-->|REST & WS| API
+    MOB <-->|REST & WS| API
     API <--> Core
     API --- DB
 
@@ -36,7 +36,7 @@ flowchart TD
     IA -->|Standard Troubleshooting| CR
     CR -->|Relevance < 20.0| HITL
     CR -->|Relevance >= 20.0| SG
-    HITL -.->|Real-time alert| AC
+    HITL -.->|Real-time alert| Clients
 ```
 
 ---
@@ -45,7 +45,8 @@ flowchart TD
 
 | Layer | Technologies |
 |---|---|
-| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4, Marked, DOMPurify |
+| **Web Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4, Marked, DOMPurify |
+| **Mobile Frontend** | React Native, Expo SDK 57, React Navigation, Expo Constants, AsyncStorage |
 | **Backend** | FastAPI, Uvicorn, SQLAlchemy, SQLite, WebSockets, Pydantic v2 |
 | **Agent & Inference** | LangGraph, LiteLLM (Groq `gpt-oss-120b`, Gemini `gemini-3.8-flash`, OpenAI `gpt-4o-mini`) |
 | **Search & Retrieval** | Elasticsearch Cloud Serverless, BM25 + Dense kNN (768d `.jina-embeddings-v5-text-nano`) |
@@ -64,12 +65,12 @@ customer_support_agent/
 │   ├── routers/
 │   │   ├── sessions.py       # Customer chat session endpoints
 │   │   ├── agents.py         # Agent console ticket & message endpoints
-│   │   └── ws.py             # WebSocket routes (/ws/chat, /ws/agent)
+│   │   └── ws.py             # WebSocket routes (/ws/sessions, /ws/agents)
 │   ├── services/
 │   │   ├── chat_service.py   # Agent execution wrapper & session state sync
 │   │   └── websocket_manager.py # Real-time pub/sub connection manager
-│   └── main.py               # FastAPI entrypoint & static mount
-├── frontend/                 # React 19 SPA (Spotify dark theme)
+│   └── main.py               # FastAPI entrypoint, dynamic CORS & static mount
+├── frontend-web/             # React 19 SPA (Spotify dark theme)
 │   ├── src/
 │   │   ├── pages/
 │   │   │   ├── CustomerChat.tsx   # Customer conversational interface
@@ -78,6 +79,17 @@ customer_support_agent/
 │   │   ├── hooks/            # useWebSocket hook
 │   │   └── api/client.ts     # Typed fetch client
 │   ├── vite.config.ts        # Vite dev server with /api and /ws proxy
+│   └── package.json
+├── frontend-mobile/          # React Native / Expo app (Spotify dark theme)
+│   ├── src/
+│   │   ├── screens/
+│   │   │   ├── CustomerChatScreen.tsx   # Mobile chat with live server switcher
+│   │   │   └── AgentDashboardScreen.tsx # Mobile HITL agent queue & takeover
+│   │   ├── components/       # MessageBubble, ChatInput, TicketCard
+│   │   ├── hooks/            # useWebSocket auto-reconnecting hook
+│   │   └── api/client.ts     # Dynamic host discovery client (Expo Constants)
+│   ├── App.tsx               # Native Stack Navigation entrypoint
+│   ├── .env                  # Optional EXPO_PUBLIC_API_BASE_URL override
 │   └── package.json
 ├── src/                      # Core agent & RAG pipeline
 │   ├── agent/
@@ -125,26 +137,48 @@ OPENAI_MODEL="gpt-4o-mini"
 RAG_CONFIDENCE_THRESHOLD=20.0
 ```
 
-### 2. Run Web Application
+---
 
-**Terminal 1 — Backend (FastAPI + WebSockets):**
+### 2. Run Backend & Frontend Applications
+
+#### Terminal 1 — Backend (FastAPI + WebSockets)
 ```bash
 uv sync
-uv run uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
+*Note: Binding to `0.0.0.0` allows physical mobile devices on your Wi-Fi or mobile hotspot to connect.*
 
-**Terminal 2 — Frontend (Vite + React):**
+#### Terminal 2 — Web Frontend (React 19 + Vite)
 ```bash
-cd frontend
+cd frontend-web
 npm install
 npm run dev
 ```
+* **Customer Chat**: [http://localhost:5173](http://localhost:5173)
+* **Agent Console**: [http://localhost:5173/agent](http://localhost:5173/agent)
+* **API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-- **Customer Chat**: [http://localhost:5173](http://localhost:5173)
-- **Agent Console**: [http://localhost:5173/agent](http://localhost:5173/agent)
-- **API Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+#### Terminal 3 — Mobile Frontend (React Native / Expo)
+```bash
+cd frontend-mobile
+npm install
+npx expo start
+```
+Scan the QR code with **Expo Go** on iOS or Android, or press:
+* `a` — Android emulator
+* `i` — iOS simulator
+* `w` — Web browser preview
 
-*Note: You can also build the frontend (`npm run build`), and FastAPI will automatically serve the production bundle from the root URL.*
+**Mobile Connection & Auto-Discovery**:
+* The mobile app uses **dynamic host resolution** via `expo-constants`. When opening via Expo Go, it automatically extracts your development machine's IP without requiring any manual IP configuration.
+* Tap **⚙️ Server** in the top-right header of the mobile app to switch between:
+  * **Auto-detected Host** (Wi-Fi / Hotspot IP)
+  * **Android Emulator** (`http://10.0.2.2:8000`)
+  * **Localhost** (`http://localhost:8000`)
+  * Custom API URL
+* **Mobile Hotspot / Windows Note**: If your laptop is connected to your phone's mobile hotspot, ensure your Wi-Fi network profile in Windows Settings is set to **Private** so Windows Defender Firewall permits incoming connections on port 8000.
+
+---
 
 ### 3. Run CLI Interface
 
@@ -172,8 +206,8 @@ The system uses a **dual-checkpoint gate** to decide when human intervention is 
 Customer triggers HITL
   └─► Agent generates Ticket (e.g. SPOTIFY-T2-78412)
   └─► Saved to SQLite (status: hitl_pending)
-  └─► WebSocket event (hitl_new) broadcast to /ws/agent
-  └─► Agent Console displays ticket with diagnostics & reasoning
+  └─► WebSocket event (hitl_new) broadcast to /ws/agents
+  └─► Agent Console (Web & Mobile) displays ticket with diagnostics
   └─► Agent clicks "Claim Ticket" (status: human_active)
   └─► Live two-way WebSocket chat takeover between customer and human agent
   └─► Agent marks "Resolve" (status: closed)

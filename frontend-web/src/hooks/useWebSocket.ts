@@ -21,7 +21,7 @@ export function useWebSocket(url: string | null, onMessage: (data: WsMessage) =>
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
     function connect() {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(url as string);
       wsRef.current = ws;
 
       ws.onopen = () => {

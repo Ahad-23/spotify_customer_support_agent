@@ -20,9 +20,25 @@ __pycache__/
 htmlcov/
 .ipynb_checkpoints/
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
+# Node & Frontend dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+.npm/
+
+# Build & bundle artifacts
+dist/
+**/dist/
+build/
+**/build/
+web-build/
+*.tsbuildinfo
+
+# Expo & Metro
+.expo/
+**/.expo/
+.metro-health-check*
 
 # UI database (runtime)
 data/support.db
@@ -32,3 +48,7 @@ TECHNICAL_DOCUMENTATION.md
 implementation_plan.md
 context.md
 LANGGRAPH_ARCHITECTURE.md
+
+# OS files
+.DS_Store
+Thumbs.db
