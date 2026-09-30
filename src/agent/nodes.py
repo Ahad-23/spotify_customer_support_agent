@@ -148,13 +148,13 @@ def intent_analyzer_node(state: SupportAgentState) -> Dict[str, Any]:
     }
 
 
-RAG_CONFIDENCE_THRESHOLD = float(os.getenv("RAG_CONFIDENCE_THRESHOLD", "20.0"))
+RAG_CONFIDENCE_THRESHOLD = float(os.getenv("RAG_CONFIDENCE_THRESHOLD", "0.70"))
 
 
 def case_retriever_node(state: SupportAgentState) -> Dict[str, Any]:
     """
-    Queries Elasticsearch for historical cases with matching problem descriptions.
-    Evaluates match score against RAG_CONFIDENCE_THRESHOLD.
+    Queries Pinecone for historical cases with matching problem descriptions.
+    Evaluates match score against RAG_CONFIDENCE_THRESHOLD (cosine similarity).
     """
     if state.requires_escalation or state.is_hitl:
         return {"retrieved_cases": [], "confidence_score": 0.0, "rag_threshold_passed": False}
@@ -175,12 +175,12 @@ def case_retriever_node(state: SupportAgentState) -> Dict[str, Any]:
     best_res = matches[0].resolution if matches else ""
     top_score = matches[0].score if matches else 0.0
 
-    threshold = float(os.getenv("RAG_CONFIDENCE_THRESHOLD", "20.0"))
+    threshold = float(os.getenv("RAG_CONFIDENCE_THRESHOLD", "0.70"))
     threshold_passed = bool(matches and top_score >= threshold)
     is_hitl = state.is_hitl or (not threshold_passed)
     reason = state.escalation_reason
     if not threshold_passed and not reason:
-        reason = f"Low knowledge-base confidence ({top_score:.2f} < {threshold}) - specialized inquiry"
+        reason = f"Low knowledge-base confidence ({top_score:.2f} < {threshold:.2f}) - specialized inquiry"
 
     return {
         "retrieved_cases": cases_dicts,

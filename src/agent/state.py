@@ -28,7 +28,7 @@ class SupportAgentState(BaseModel):
     )
     retrieved_cases: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Top historical resolved cases retrieved from Elasticsearch"
+        description="Top historical resolved cases retrieved from Pinecone"
     )
     best_resolution: str = Field(
         default="",

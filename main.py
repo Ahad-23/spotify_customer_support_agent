@@ -187,8 +187,8 @@ def main():
     parser = argparse.ArgumentParser(description="SpotifyCares Case-Based AI Support Agent")
     parser.add_argument("--query", "-q", type=str, help="Run a single query and exit")
     parser.add_argument("--eval", action="store_true", help="Run benchmark evaluation queries")
-    parser.add_argument("--index", action="store_true", help="Index cases into Elasticsearch")
-    parser.add_argument("--recreate", action="store_true", help="Recreate Elasticsearch index")
+    parser.add_argument("--index", action="store_true", help="Index cases into Pinecone")
+    parser.add_argument("--recreate", action="store_true", help="Recreate Pinecone index")
     parser.add_argument("--limit", type=int, default=None, help="Limit indexing count")
     args = parser.parse_args()
 

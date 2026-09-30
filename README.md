@@ -1,6 +1,6 @@
 # SpotifyCares AI Support Platform
 
-A Case-Based Reasoning (CBR) customer support platform with real-time Human-in-the-Loop (HITL) handoff. Powered by **LangGraph**, **Elasticsearch Serverless** hybrid search, **FastAPI + WebSockets**, **React 19**, and **React Native / Expo**.
+A Case-Based Reasoning (CBR) customer support platform with real-time Human-in-the-Loop (HITL) handoff. Powered by **LangGraph**, **Pinecone Serverless** vector search, **FastAPI + WebSockets**, **React 19**, and **React Native / Expo**.
 
 ---
 
@@ -21,7 +21,7 @@ flowchart TD
 
     subgraph Core["Agent Core (LangGraph)"]
         IA["Intent & Sentiment Analyzer\n• Device detection\n• Frustration scoring (LiteLLM)"]
-        CR["Case Retriever (CBR)\n• Hybrid Search (BM25 + Dense kNN)\n• .jina-embeddings-v5-text-nano"]
+        CR["Case Retriever (CBR)\n• Pinecone Serverless (Cosine)\n• multilingual-e5-large (1024d)"]
         SG["Solution Generator\n• Groq / Gemini / OpenAI\n• Deterministic Fallback"]
         HITL["HITL Escalation Node\n• Structured Ticket Dispatch\n• SPOTIFY-T2-#####"]
     end
@@ -34,8 +34,8 @@ flowchart TD
     IA -->|Billing / Account Security| HITL
     IA -->|Frustration >= 0.5 / Agent Request| HITL
     IA -->|Standard Troubleshooting| CR
-    CR -->|Relevance < 20.0| HITL
-    CR -->|Relevance >= 20.0| SG
+    CR -->|Relevance < 0.70| HITL
+    CR -->|Relevance >= 0.70| SG
     HITL -.->|Real-time alert| Clients
 ```
 
@@ -49,7 +49,7 @@ flowchart TD
 | **Mobile Frontend** | React Native, Expo SDK 57, React Navigation, Expo Constants, AsyncStorage |
 | **Backend** | FastAPI, Uvicorn, SQLAlchemy, SQLite, WebSockets, Pydantic v2 |
 | **Agent & Inference** | LangGraph, LiteLLM (Groq `gpt-oss-120b`, Gemini `gemini-3.8-flash`, OpenAI `gpt-4o-mini`) |
-| **Search & Retrieval** | Elasticsearch Cloud Serverless, BM25 + Dense kNN (768d `.jina-embeddings-v5-text-nano`) |
+| **Search & Retrieval** | Pinecone Serverless, multilingual-e5-large (1024d dense vectors via Pinecone Inference) |
 | **Data & Tooling** | `uv`, Polars, PyArrow, Rich, Pytest |
 
 ---
@@ -99,9 +99,9 @@ customer_support_agent/
 │   │   ├── sentiment.py      # LLM sentiment engine with LRU query caching
 │   │   └── state.py          # SupportAgentState schema
 │   ├── rag/
-│   │   ├── indexer.py        # Elasticsearch mapping & bulk index lifecycle
-│   │   ├── retriever.py      # BM25 + kNN hybrid retriever with compound scoring
-│   │   └── embeddings.py     # In-cluster Elasticsearch dense inference client
+│   │   ├── indexer.py        # Pinecone Serverless index & bulk upsert lifecycle
+│   │   ├── retriever.py      # Pinecone dense vector retriever with metadata filtering
+│   │   └── embeddings.py     # Pinecone Inference embedding client (multilingual-e5-large)
 │   ├── data/                 # Dataset preprocessing & PII extraction pipeline
 │   └── eval/                 # LLM-as-a-judge evaluation suite
 ├── data/                     # Local SQLite database & processed datasets
@@ -119,9 +119,11 @@ customer_support_agent/
 Create `.env` in the root directory:
 
 ```env
-# Elasticsearch Cloud Serverless
-ELASTICSEARCH_ENDPOINT="https://<cluster-id>.es.<region>.aws.elastic.cloud:443"
-ELASTICSEARCH_API_KEY="<api-key>"
+# Pinecone Serverless Configuration
+PINECONE_API_KEY="pcsk_..."
+PINECONE_INDEX_NAME="spotify-support-cases"
+PINECONE_CLOUD="aws"
+PINECONE_REGION="us-east-1"
 
 # Primary LLM Provider (Default: Groq)
 GROQ_API_KEY="gsk_..."
@@ -133,8 +135,8 @@ GEMINI_MODEL="gemini-3.8-flash"
 OPENAI_API_KEY="sk-..."
 OPENAI_MODEL="gpt-4o-mini"
 
-# Retrieval Threshold
-RAG_CONFIDENCE_THRESHOLD=20.0
+# Retrieval Threshold (Cosine similarity: 0.0 to 1.0)
+RAG_CONFIDENCE_THRESHOLD=0.70
 ```
 
 ---
@@ -200,7 +202,7 @@ The system uses a **dual-checkpoint gate** to decide when human intervention is 
    - Intent: Account security, billing disputes, or credentials.
    - Sentiment: Frustration score $\ge 0.5$, sarcastic tone, or explicit requests for a representative.
 2. **Post-Retrieval Gate**:
-   - RAG Confidence: Compound score $< 20.0$ against historical cases.
+   - RAG Confidence: Cosine similarity score $< 0.70$ against historical cases.
 
 ```
 Customer triggers HITL
@@ -215,7 +217,7 @@ Customer triggers HITL
 
 ---
 
-## Knowledge Base & Elasticsearch Setup
+## Knowledge Base & Pinecone Setup
 
 To rebuild the vector index from raw Twitter customer support data:
 
@@ -224,18 +226,18 @@ To rebuild the vector index from raw Twitter customer support data:
    ```bash
    uv run python src/data/extract_spotify_threads.py --input dataset/twcs.csv --output_dir data/processed
    ```
-3. **Index into Elasticsearch**:
+3. **Index into Pinecone**:
    ```bash
    uv run python main.py --index --recreate
    ```
 
-### Hybrid Retrieval Scoring
+### Cosine Similarity Scoring
 
-$$\text{Score} = \text{BM25}(q, d) + (\text{Cosine}(v_q, v_d) \times 0.8)$$
+$$\text{Score} = \text{Cosine}(v_q, v_d)$$
 
-- **Score $< 20.0$**: Low relevance match $\rightarrow$ intercepted and escalated to HITL.
-- **Score $25.0 - 32.0$**: Moderate semantic match $\rightarrow$ synthesized into step-by-step guidance.
-- **Score $\ge 35.0$**: High-confidence match $\rightarrow$ verified device-specific resolution.
+- **Score $< 0.70$**: Low relevance match $\rightarrow$ intercepted and escalated to HITL.
+- **Score $0.70 - 0.85$**: Moderate semantic match $\rightarrow$ synthesized into step-by-step guidance.
+- **Score $\ge 0.85$**: High-confidence match $\rightarrow$ verified device-specific resolution.
 
 ---
 

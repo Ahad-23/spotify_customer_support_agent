@@ -1,11 +1,13 @@
 """
-Asymmetric Case Retriever for Spotify Support
+Pinecone Case Retriever for Spotify Support
 
-Performs hybrid semantic search (kNN dense vector on problem_vector + BM25 keyword matching)
-to retrieve historical solved customer support cases that match an incoming customer problem.
+Performs dense semantic search on problem vectors (1024d multilingual-e5-large)
+with metadata filtering to retrieve historical solved customer support cases
+that match an incoming customer problem.
 """
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
@@ -14,8 +16,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from elasticsearch import Elasticsearch
-from src.rag.embeddings import ElasticNativeEmbeddingService
+import dotenv
+from pinecone import Pinecone
+
+from src.rag.embeddings import PineconeEmbeddingService
+
+dotenv.load_dotenv(REPO_ROOT / ".env")
+
+DEFAULT_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "spotify-support-cases")
 
 
 @dataclass
@@ -43,12 +51,19 @@ class RetrievedCase:
 class CaseRetriever:
     def __init__(
         self,
-        index_name: str = "spotify_support_cases",
-        embedding_service: Optional[ElasticNativeEmbeddingService] = None,
+        index_name: str = DEFAULT_INDEX_NAME,
+        embedding_service: Optional[PineconeEmbeddingService] = None,
     ):
         self.index_name = index_name
-        self.embedding_service = embedding_service or ElasticNativeEmbeddingService()
-        self.es = self.embedding_service.es
+        self.embedding_service = embedding_service or PineconeEmbeddingService()
+        self.pc = self.embedding_service.pc
+        self._index = None
+
+    @property
+    def index(self):
+        if self._index is None:
+            self._index = self.pc.Index(self.index_name)
+        return self._index
 
     def retrieve(
         self,
@@ -59,74 +74,61 @@ class CaseRetriever:
     ) -> List[RetrievedCase]:
         """
         Retrieves top-k historical cases that best match the customer query.
-        Uses asymmetric problem-to-problem dense vector matching + BM25 hybrid search.
+        Uses asymmetric problem-to-problem dense vector matching on Pinecone Serverless.
         """
         if not query or not query.strip():
             return []
 
-        # 1. Generate dense query embedding via native ES inference
-        query_vector = self.embedding_service.embed_query(query)
-
-        # 2. Build kNN search clause
-        knn_clause: Dict[str, Any] = {
-            "field": "problem_vector",
-            "query_vector": query_vector,
-            "k": top_k,
-            "num_candidates": max(50, top_k * 10),
-            "boost": 0.8,
-        }
-
-        if intent_filter and intent_filter != "general_inquiry":
-            knn_clause["filter"] = {"term": {"intent": intent_filter}}
-
-        # 3. Build BM25 keyword query clause
-        bm25_clause: Dict[str, Any] = {
-            "multi_match": {
-                "query": query,
-                "fields": ["customer_message^2", "resolution", "conversation"],
-                "fuzziness": "AUTO",
-            }
-        }
-
-        # 4. Execute hybrid search
-        search_body: Dict[str, Any] = {
-            "size": top_k,
-            "knn": knn_clause,
-            "query": bm25_clause,
-            "_source": [
-                "case_id",
-                "intent",
-                "customer_message",
-                "resolution",
-                "conversation",
-                "metadata",
-            ],
-        }
-
+        # 1. Generate dense query embedding via Pinecone Inference
         try:
-            response = self.es.search(index=self.index_name, body=search_body)
-            hits = response.get("hits", {}).get("hits", [])
+            query_vector = self.embedding_service.embed_query(query)
         except Exception as e:
-            # Fallback to pure kNN if serverless hybrid syntax difference occurs
-            search_body.pop("query", None)
-            response = self.es.search(index=self.index_name, body=search_body)
-            hits = response.get("hits", {}).get("hits", [])
+            print(f"Warning: Failed to embed query: {e}")
+            return []
+
+        # 2. Build metadata filter clause if intent filter specified
+        filter_clause = None
+        if intent_filter and intent_filter != "general_inquiry":
+            filter_clause = {"intent": {"$eq": intent_filter}}
+
+        # 3. Query Pinecone
+        matches = []
+        try:
+            response = self.index.query(
+                vector=query_vector,
+                top_k=top_k,
+                filter=filter_clause,
+                include_metadata=True,
+            )
+            matches = response.matches or []
+        except Exception:
+            # Fallback without filter if error occurred or index schema difference
+            try:
+                response = self.index.query(
+                    vector=query_vector,
+                    top_k=top_k,
+                    include_metadata=True,
+                )
+                matches = response.matches or []
+            except Exception as e2:
+                print(f"Warning: Pinecone query failed: {e2}")
+                return []
 
         results: List[RetrievedCase] = []
-        for hit in hits:
-            score = float(hit.get("_score", 0.0))
+        for match in matches:
+            score = float(match.score if match.score is not None else 0.0)
             if score < min_score:
                 continue
 
-            src = hit.get("_source", {})
+            src = match.metadata or {}
             case = RetrievedCase(
-                case_id=src.get("case_id", hit.get("_id", "")),
+                case_id=src.get("case_id", match.id),
                 score=score,
                 intent=src.get("intent", "general_inquiry"),
                 customer_problem=src.get("customer_message", ""),
                 resolution=src.get("resolution", ""),
                 conversation=src.get("conversation", ""),
-                metadata=src.get("metadata", {}),
+                metadata=src,
             )
             results.append(case)
 

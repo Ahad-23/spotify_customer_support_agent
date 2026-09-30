@@ -1,8 +1,9 @@
 """
-Elasticsearch Indexer for Spotify Troubleshooting Cases
+Pinecone Indexer for Spotify Troubleshooting Cases
 
-Creates the `spotify_support_cases` index with 768-dim dense vectors (cosine similarity),
-embeds customer problem statements using native ES inference, and bulk-indexes documents.
+Creates the `spotify-support-cases` Pinecone Serverless index with 1024-dim dense vectors,
+embeds customer problem statements using Pinecone Inference API (multilingual-e5-large),
+and bulk-upserts documents.
 """
 
 import argparse
@@ -18,90 +19,80 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import dotenv
-from elasticsearch import Elasticsearch, helpers
+from pinecone import Pinecone, ServerlessSpec
 from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
-from src.rag.embeddings import ElasticNativeEmbeddingService
-
+from src.rag.embeddings import PineconeEmbeddingService
 
 console = Console()
+dotenv.load_dotenv(REPO_ROOT / ".env")
 
-INDEX_NAME = "spotify_support_cases"
-
-INDEX_MAPPINGS = {
-    "mappings": {
-        "properties": {
-            "case_id": {"type": "keyword"},
-            "intent": {"type": "keyword"},
-            "customer_message": {
-                "type": "text",
-                "fields": {"keyword": {"type": "keyword", "ignore_above": 256}},
-            },
-            "problem_vector": {
-                "type": "dense_vector",
-                "dims": 768,
-                "index": True,
-                "similarity": "cosine",
-            },
-            "resolution": {"type": "text"},
-            "conversation": {"type": "text"},
-            "metadata": {
-                "properties": {
-                    "brand": {"type": "keyword"},
-                    "root_tweet_id": {"type": "long"},
-                    "turn_count": {"type": "integer"},
-                    "has_resolution": {"type": "boolean"},
-                    "has_troubleshooting": {"type": "boolean"},
-                    "is_deflection": {"type": "boolean"},
-                    "resolved_in_public": {"type": "boolean"},
-                    "created_at": {"type": "keyword"},
-                }
-            },
-        }
-    }
-}
+DEFAULT_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "spotify-support-cases")
 
 
 class CaseIndexer:
     def __init__(
         self,
-        index_name: str = INDEX_NAME,
-        embedding_service: Optional[ElasticNativeEmbeddingService] = None,
+        index_name: str = DEFAULT_INDEX_NAME,
+        embedding_service: Optional[PineconeEmbeddingService] = None,
     ):
         self.index_name = index_name
-        self.embedding_service = embedding_service or ElasticNativeEmbeddingService()
-        self.es = self.embedding_service.es
+        self.embedding_service = embedding_service or PineconeEmbeddingService()
+        self.pc = self.embedding_service.pc
+        self._index = None
+
+    @property
+    def index(self):
+        if self._index is None:
+            self._index = self.pc.Index(self.index_name)
+        return self._index
 
     def setup_index(self, recreate: bool = False):
         """
-        Creates the Elasticsearch index if it doesn't exist, or recreates if specified.
+        Creates the Pinecone Serverless index if it doesn't exist, or recreates if specified.
         """
-        exists = self.es.indices.exists(index=self.index_name)
+        cloud = os.getenv("PINECONE_CLOUD", "aws")
+        region = os.getenv("PINECONE_REGION", "us-east-1")
+
+        exists = self.pc.has_index(self.index_name)
         if exists and recreate:
             console.print(f"[bold yellow]Deleting existing index:[/bold yellow] {self.index_name}")
-            self.es.indices.delete(index=self.index_name)
+            self.pc.delete_index(self.index_name)
+            # Brief pause to allow deletion to register
+            time.sleep(2)
             exists = False
 
         if not exists:
-            console.print(f"[bold cyan]Creating index with 768-dim vector mappings:[/bold cyan] {self.index_name}")
-            self.es.indices.create(index=self.index_name, body=INDEX_MAPPINGS)
-            console.print("[bold green]Index created successfully.[/bold green]")
+            console.print(
+                f"[bold cyan]Creating Pinecone index ({self.embedding_service.dimension}d, {cloud}/{region}):[/bold cyan] {self.index_name}"
+            )
+            self.pc.create_index(
+                name=self.index_name,
+                dimension=self.embedding_service.dimension,
+                metric="cosine",
+                spec=ServerlessSpec(cloud=cloud, region=region),
+            )
+            # Wait until ready
+            while not self.pc.describe_index(self.index_name).status["ready"]:
+                time.sleep(1)
+            console.print("[bold green]Pinecone index created successfully and ready.[/bold green]")
         else:
-            console.print(f"[bold green]Index '{self.index_name}' already exists.[/bold green]")
+            console.print(f"[bold green]Index '{self.index_name}' already exists and ready.[/bold green]")
 
     def index_cases(
         self,
         cases_file: str,
         limit: Optional[int] = None,
-        batch_size: int = 32,
+        batch_size: int = 64,
     ):
         """
-        Reads cases from JSONL file, computes native embeddings for customer_message,
-        and streams them into Elasticsearch in batches.
+        Reads cases from JSONL file, computes embeddings for customer_message via Pinecone Inference,
+        and streams them into Pinecone index in batches.
         """
         if not os.path.exists(cases_file):
             raise FileNotFoundError(f"Cases file not found: {cases_file}")
+
+        self.setup_index(recreate=False)
 
         console.print(f"[bold cyan]Reading cases from:[/bold cyan] {cases_file}")
         cases: List[Dict[str, Any]] = []
@@ -118,73 +109,71 @@ class CaseIndexer:
 
         start_time = time.time()
         indexed_count = 0
-
-        # Process in batches of 16 (strict ES inference API limit)
-        actual_batch = min(batch_size, 16)
+        actual_batch = min(batch_size, 96)
         console.print(f"Indexing cases in batches of {actual_batch}...")
 
         for i in range(0, total_cases, actual_batch):
             batch = cases[i : i + actual_batch]
             messages = [c.get("customer_message", "") for c in batch]
 
-            # Compute dense embeddings natively
             embeddings = self.embedding_service.embed_texts(messages, batch_size=actual_batch)
 
-            # Prepare bulk actions
-            actions = []
+            vectors = []
             for case, emb in zip(batch, embeddings):
-                doc = {
-                    "_index": self.index_name,
-                    "_id": case.get("case_id"),
-                    "_source": {
-                        "case_id": case.get("case_id"),
-                        "intent": case.get("intent", "general_inquiry"),
-                        "customer_message": case.get("customer_message", ""),
-                        "problem_vector": emb,
-                        "resolution": case.get("resolution", ""),
-                        "conversation": "\n".join(case.get("conversation", []))
-                        if isinstance(case.get("conversation"), list)
-                        else str(case.get("conversation", "")),
-                        "metadata": case.get("metadata", {}),
-                    },
-                }
-                actions.append(doc)
-
-            success_count, _ = helpers.bulk(self.es, actions, refresh=False)
-            indexed_count += success_count
-
-            if (i // actual_batch) % 10 == 0 or indexed_count >= total_cases:
-                elapsed = time.time() - start_time
-                pct = (indexed_count / total_cases) * 100
-                rate = indexed_count / elapsed if elapsed > 0 else 0.0
-                console.print(
-                    f"  Indexed [bold green]{indexed_count:,}/{total_cases:,}[/bold green] "
-                    f"({pct:.1f}%) | {rate:.1f} cases/s | Elapsed: {elapsed:.1f}s"
+                case_id = case.get("case_id") or f"case_{int(time.time()*1000)}"
+                raw_conv = case.get("conversation", [])
+                conv_str = (
+                    "\n".join(raw_conv) if isinstance(raw_conv, list) else str(raw_conv)
                 )
 
-        # Refresh index so documents are immediately searchable
-        self.es.indices.refresh(index=self.index_name)
-        total_time = time.time() - start_time
+                meta = {
+                    "case_id": case_id,
+                    "intent": case.get("intent", "general_inquiry"),
+                    "customer_message": case.get("customer_message", "")[:2000],
+                    "resolution": case.get("resolution", "")[:3000],
+                    "conversation": conv_str[:3000],
+                    "brand": case.get("metadata", {}).get("brand", "SpotifyCares"),
+                    "turn_count": case.get("metadata", {}).get("turn_count", 0),
+                    "has_resolution": case.get("metadata", {}).get("has_resolution", True),
+                }
+
+                vectors.append({
+                    "id": case_id,
+                    "values": emb,
+                    "metadata": meta,
+                })
+
+            self.index.upsert(vectors=vectors)
+            indexed_count += len(vectors)
+
+            elapsed = time.time() - start_time
+            pct = (indexed_count / total_cases) * 100
+            rate = indexed_count / elapsed if elapsed > 0 else 0.0
+            console.print(
+                f"  [{pct:5.1f}%] Upserted {indexed_count:,}/{total_cases:,} cases "
+                f"({rate:.1f} cases/s, {elapsed:.1f}s elapsed)"
+            )
+
+        total_elapsed = time.time() - start_time
         console.print(
-            f"\n[bold green]Successfully indexed {indexed_count:,} cases in {total_time:.2f}s "
-            f"({indexed_count / total_time:.1f} cases/sec)![/bold green]"
+            f"\n[bold green]Indexing Complete![/bold green] "
+            f"Successfully upserted {indexed_count:,} cases into '{self.index_name}' in {total_elapsed:.2f}s."
         )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Index Spotify cases into Elasticsearch with native embeddings")
+    parser = argparse.ArgumentParser(description="Index Spotify cases into Pinecone Serverless")
     parser.add_argument(
-        "--input",
-        type=str,
-        default="data/processed/spotify_troubleshooting_cases.jsonl",
-        help="Path to processed JSONL cases",
+        "--file",
+        default=str(REPO_ROOT / "data" / "processed" / "spotify_troubleshooting_cases.jsonl"),
+        help="Path to JSONL cases file",
     )
-    parser.add_argument("--recreate", action="store_true", help="Recreate index if it exists")
-    parser.add_argument("--limit", type=int, default=None, help="Limit number of cases to index (for testing)")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for embedding and bulk indexing")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of cases to index")
+    parser.add_argument("--recreate", action="store_true", help="Recreate Pinecone index if exists")
+    parser.add_argument("--batch-size", type=int, default=64, help="Embedding & upsert batch size")
     args = parser.parse_args()
 
     indexer = CaseIndexer()
-    indexer.setup_index(recreate=args.recreate)
-    indexer.index_cases(args.input, limit=args.limit, batch_size=args.batch_size)
-
+    if args.recreate:
+        indexer.setup_index(recreate=True)
+    indexer.index_cases(args.file, limit=args.limit, batch_size=args.batch_size)
