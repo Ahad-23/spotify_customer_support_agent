@@ -3,6 +3,7 @@ SpotifyCares AI Support Agent - Interactive CLI & Benchmark Testbed
 """
 
 import argparse
+import asyncio
 from pathlib import Path
 import sys
 import time
@@ -183,16 +184,44 @@ def run_eval():
     console.print(table)
 
 
+def run_task(task: str) -> None:
+    """Execute an autonomous task against osTicket and display results."""
+    from src.worker.graph import run_task_worker
+
+    console.print(Panel(
+        Text(task, style="bold white"),
+        title="[bold blue]Autonomous Task[/bold blue]",
+        border_style="blue",
+    ))
+
+    with console.status("[bold blue]Planning and executing task...[/bold blue]"):
+        result = asyncio.run(run_task_worker(task))
+
+    # Display summary
+    style = "bold green" if result.verified else "bold red"
+    console.print(Panel(
+        Text(result.summary, style="white"),
+        title=f"[{style}]Task Result[/{style}]",
+        border_style="green" if result.verified else "red",
+    ))
+
+    if result.evidence:
+        console.print(f"[dim]Evidence screenshots: {', '.join(result.evidence)}[/dim]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="SpotifyCares Case-Based AI Support Agent")
     parser.add_argument("--query", "-q", type=str, help="Run a single query and exit")
+    parser.add_argument("--task", "-t", type=str, help="Run an autonomous task against osTicket")
     parser.add_argument("--eval", action="store_true", help="Run benchmark evaluation queries")
     parser.add_argument("--index", action="store_true", help="Index cases into Pinecone")
     parser.add_argument("--recreate", action="store_true", help="Recreate Pinecone index")
     parser.add_argument("--limit", type=int, default=None, help="Limit indexing count")
     args = parser.parse_args()
 
-    if args.index:
+    if args.task:
+        run_task(args.task)
+    elif args.index:
         indexer = CaseIndexer()
         indexer.setup_index(recreate=args.recreate)
         indexer.index_cases("data/processed/spotify_troubleshooting_cases.jsonl", limit=args.limit)

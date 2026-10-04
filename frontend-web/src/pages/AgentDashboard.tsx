@@ -169,7 +169,7 @@ export default function AgentDashboard() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#1db954] text-black text-xs font-bold">
-              ♫
+              SP
             </div>
             <div>
               <h1 className="text-sm font-semibold text-white">Spotify Support Console</h1>
@@ -183,12 +183,20 @@ export default function AgentDashboard() {
               </p>
             </div>
           </div>
-          <Link
-            to="/"
-            className="rounded-full border border-[#333333] px-3 py-1 text-xs text-[#cccccc] transition hover:border-[#555555] hover:text-white"
-          >
-            Customer view
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/tasks"
+              className="rounded-full border border-emerald-800/80 bg-emerald-950/40 px-3 py-1 text-xs text-emerald-400 transition hover:bg-emerald-900/50 hover:text-emerald-300 font-medium"
+            >
+              Task Worker
+            </Link>
+            <Link
+              to="/"
+              className="rounded-full border border-[#333333] px-3 py-1 text-xs text-[#cccccc] transition hover:border-[#555555] hover:text-white"
+            >
+              Customer view
+            </Link>
+          </div>
         </div>
       </header>
 

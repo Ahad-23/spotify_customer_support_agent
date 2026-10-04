@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, Message, wsUrl } from "../api/client";
 import ChatInput from "../components/ChatInput";
 import MessageBubble from "../components/MessageBubble";
@@ -144,8 +145,13 @@ export default function CustomerChat() {
             </div>
           </div>
 
-          <div className="flex items-center">
-            {/* Note: Agent Login link was removed as requested */}
+          <div className="flex items-center gap-2">
+            <Link
+              to="/tasks"
+              className="rounded-full border border-emerald-800/80 bg-emerald-950/40 px-3.5 py-1.5 text-xs font-medium text-emerald-400 transition hover:bg-emerald-900/50 hover:text-emerald-300"
+            >
+              Task Worker
+            </Link>
             <button
               type="button"
               onClick={handleNewChat}

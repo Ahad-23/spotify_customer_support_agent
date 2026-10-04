@@ -33,7 +33,7 @@ export default function MessageBubble({ message }: Props) {
         <div className="mb-1.5 flex items-center gap-1.5 px-1 text-xs text-[#a7a7a7]">
           {!isCustomer && (
             <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#1db954] text-[9px] font-bold text-black">
-              {isSpecialist ? "S" : "♫"}
+              {isSpecialist ? "S" : "A"}
             </span>
           )}
           <span className="font-medium text-[#b3b3b3]">

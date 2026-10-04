@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import dotenv
 import litellm
+from src.worker.config import safe_llm_completion
 from rich.console import Console
 from rich.table import Table
 
@@ -130,17 +131,18 @@ GOLDEN_EVAL_CASES = [
 class LLMJudge:
     def __init__(self, model: Optional[str] = None):
         if model:
-            self.model = model
-        elif os.getenv("JUDGE_MODEL"):
-            self.model = os.getenv("JUDGE_MODEL")
+            if "gpt-oss" in model and not model.startswith("groq/"):
+                self.model = f"groq/{model}"
+            else:
+                self.model = model
+        elif os.getenv("JUDGE_MODEL") or os.getenv("LLM_MODEL") or os.getenv("GROQ_MODEL"):
+            jm = os.getenv("JUDGE_MODEL") or os.getenv("LLM_MODEL") or os.getenv("GROQ_MODEL")
+            self.model = f"groq/{jm}" if ("gpt-oss" in jm and not jm.startswith("groq/")) else jm
         elif os.getenv("GROQ_API_KEY"):
-            groq_m = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-            self.model = f"groq/{groq_m}" if not groq_m.startswith("groq/") else groq_m
+            self.model = "groq/openai/gpt-oss-120b"
         elif os.getenv("GEMINI_API_KEY"):
             gem_m = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
             self.model = f"gemini/{gem_m}" if not gem_m.startswith("gemini/") else gem_m
-        elif os.getenv("OPENAI_API_KEY"):
-            self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         else:
             self.model = "groq/openai/gpt-oss-120b"
 
@@ -179,13 +181,14 @@ Agent Escalated: {state.requires_escalation} (Expected Escalation: {should_escal
         # Try LLM evaluation if API key is provided
         if self.has_llm_key:
             try:
-                llm_res = litellm.completion(
+                llm_res = safe_llm_completion(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
                         {"role": "user", "content": user_content},
                     ],
                     temperature=0.0,
+                    max_tokens=400,
                     response_format={"type": "json_object"},
                 )
                 data = json.loads(llm_res.choices[0].message.content)

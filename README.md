@@ -48,7 +48,7 @@ flowchart TD
 | **Web Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4, Marked, DOMPurify |
 | **Mobile Frontend** | React Native, Expo SDK 57, React Navigation, Expo Constants, AsyncStorage |
 | **Backend** | FastAPI, Uvicorn, SQLAlchemy, SQLite, WebSockets, Pydantic v2 |
-| **Agent & Inference** | LangGraph, LiteLLM (Groq `gpt-oss-120b`, Gemini `gemini-3.8-flash`, OpenAI `gpt-4o-mini`) |
+| **Agent & Inference** | LangGraph, LiteLLM (Groq `groq/openai/gpt-oss-120b`, fallback Gemini `gemini-3.8-flash`) |
 | **Search & Retrieval** | Pinecone Serverless, multilingual-e5-large (1024d dense vectors via Pinecone Inference) |
 | **Data & Tooling** | `uv`, Polars, PyArrow, Rich, Pytest |
 
@@ -127,13 +127,12 @@ PINECONE_REGION="us-east-1"
 
 # Primary LLM Provider (Default: Groq)
 GROQ_API_KEY="gsk_..."
-GROQ_MODEL="openai/gpt-oss-120b"
+GROQ_MODEL="groq/openai/gpt-oss-120b"
+LLM_MODEL="groq/openai/gpt-oss-120b"
 
-# Optional LLM Providers
-GEMINI_API_KEY="AIzaSy..."
+# Optional Fallback Provider
+GEMINI_API_KEY="AQ.Ab8RN..."
 GEMINI_MODEL="gemini-3.8-flash"
-OPENAI_API_KEY="sk-..."
-OPENAI_MODEL="gpt-4o-mini"
 
 # Retrieval Threshold (Cosine similarity: 0.0 to 1.0)
 RAG_CONFIDENCE_THRESHOLD=0.70
@@ -173,7 +172,7 @@ Scan the QR code with **Expo Go** on iOS or Android, or press:
 
 **Mobile Connection & Auto-Discovery**:
 * The mobile app uses **dynamic host resolution** via `expo-constants`. When opening via Expo Go, it automatically extracts your development machine's IP without requiring any manual IP configuration.
-* Tap **⚙️ Server** in the top-right header of the mobile app to switch between:
+* Tap **Server Settings** in the top-right header of the mobile app to switch between:
   * **Auto-detected Host** (Wi-Fi / Hotspot IP)
   * **Android Emulator** (`http://10.0.2.2:8000`)
   * **Localhost** (`http://localhost:8000`)
@@ -244,8 +243,11 @@ $$\text{Score} = \text{Cosine}(v_q, v_d)$$
 ## Testing & Evaluation
 
 ```bash
-# Run full test suite
+# Run full test suite (138 tests)
 uv run pytest
+
+# Run autonomous worker tests
+uv run pytest tests/test_autonomous*.py -v
 
 # Run targeted subsystem tests
 uv run pytest tests/test_hitl_escalation.py -v
@@ -257,3 +259,90 @@ uv run python main.py --eval
 # or
 uv run python src/eval/llm_judge.py
 ```
+
+---
+
+## Autonomous AI Task Worker (osTicket Integration)
+
+An autonomous execution agent that completes natural language support operations using computers, real browser automation (Playwright), and ticketing systems (osTicket).
+
+### Cyclic Act-Observe-Decide Architecture
+
+```mermaid
+flowchart LR
+    Task([Natural Language Task]) --> Planner[Planner Node\nGoal + Step Decomposition]
+    Planner -->|Ambiguous| Clarifier[Clarifier Gate\nPause for User Input]
+    Planner -->|Plan Ready| Executor[Executor Node\nPlaywright / HTTP Dispatch]
+    
+    subgraph CoreLoop["Act-Observe-Decide Cycle"]
+        Executor --> Observer[Observer Node\nInspect Output & Screenshots]
+        Observer -->|Step Succeeded| NextStep{More Steps?}
+        NextStep -->|Yes| Executor
+        Observer -->|Failure Detected| Retry{Retries < Max?}
+        Retry -->|Yes: Alternative params| Executor
+        Retry -->|No / Ambiguous| Clarifier
+    end
+
+    NextStep -->|All Steps Done| Verifier[Verifier Node\nIndependent State Check]
+    Verifier --> Reporter[Reporter Node\nSummary & Evidence]
+    Clarifier -->|User Resumes| Planner
+    Reporter --> Done([Task Completed / Evidence])
+```
+
+### 11 System Capabilities
+
+| Capability | Implementation | Evidence |
+|---|---|---|
+| **C1: Goal Understanding** | `planner.py` extracts canonical goal and support context from raw requests | Extracted goal in state & logs |
+| **C2: Action Decomposition** | `planner.py` breaks task into typed `PlanStep` sequences | Structured plan steps |
+| **C3: Tool Dispatch** | `ToolRegistry` with Playwright browser & HTTP API tools | DOM automation & API calls |
+| **C4: Result Observation** | `observer.py` analyzes action text and captured screenshots | Step status & memory updates |
+| **C5: Dynamic Deciding** | Decides next action, retry, or alternative path based on runtime state | State machine transitions |
+| **C6: Working Memory** | `state.memory` stores ticket IDs, department IDs, customer emails | Persistent memory across steps |
+| **C7: Failure Detection** | Detects HTTP errors, validation errors, timeouts, or incorrect DOM states | Error classification |
+| **C8: Error Recovery** | Retries failed steps with alternative selectors or adapted payloads | Automatic retry counter |
+| **C9: Outcome Verification** | `verifier.py` inspects created tickets and validates fields match the goal | Verification pass/fail verdict |
+| **C10: Clarification Gate** | Pauses graph when ambiguous or dangerous, awaits user approval | `awaiting_user` state & UI modal |
+| **C11: Evidence Report** | `reporter.py` compiles Markdown summary, retries count, and screenshots | Final summary + screenshots |
+
+### Running the Autonomous Worker
+
+#### 1. Start osTicket Helpdesk (Docker)
+```bash
+docker compose -f osticket/docker-compose.yml up -d
+# Accessible at http://localhost:8088 (staff panel at /scp/)
+```
+
+#### 2. Seed osTicket with Demo Support Data
+```bash
+uv run python -m osticket.seed
+```
+
+#### 3. Run Autonomous Tasks
+
+**Via CLI**:
+```bash
+uv run python main.py --task "Create a high-priority ticket for john@example.com about Bluetooth audio skipping on Android"
+```
+
+**Via Web Dashboard**:
+1. Start backend: `uv run uvicorn backend.main:app --reload --port 8000`
+2. Start frontend: `npm --prefix frontend-web run dev`
+3. Navigate to `http://localhost:5173/tasks` for the interactive Task Dashboard.
+
+**Via REST API**:
+```bash
+# Submit task
+curl -X POST http://localhost:8000/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Create ticket for john@example.com reporting playlist sync issues"}'
+
+# Poll task status
+curl http://localhost:8000/api/tasks/{task_id}
+
+# Resume paused task (clarification gate)
+curl -X POST http://localhost:8000/api/tasks/{task_id}/resume \
+  -H "Content-Type: application/json" \
+  -d '{"user_input": "Assign to Tier-1 Audio and proceed"}'
+```
+

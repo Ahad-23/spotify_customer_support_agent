@@ -1,0 +1,39 @@
+services:
+  osticket-db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: osticket_root
+      MYSQL_DATABASE: osticket
+      MYSQL_USER: osticket
+      MYSQL_PASSWORD: osticket_pass
+    volumes:
+      - osticket_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  osticket:
+    image: campbellsoftwaresolutions/osticket:latest
+    restart: unless-stopped
+    ports:
+      - "${OSTICKET_PORT:-8088}:80"
+    environment:
+      MYSQL_HOST: osticket-db
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: osticket
+      MYSQL_USER: osticket
+      MYSQL_PASSWORD: osticket_pass
+      ADMIN_USER: ${OSTICKET_ADMIN_USER:-ostadmin}
+      ADMIN_PASSWORD: ${OSTICKET_ADMIN_PASS:-Admin1}
+      ADMIN_EMAIL: ${OSTICKET_ADMIN_EMAIL:-admin@example.com}
+      INSTALL_SECRET: ${OSTICKET_SECRET:-osticket_secret_key_84920}
+      URL: http://localhost:8088/
+    depends_on:
+      osticket-db:
+        condition: service_healthy
+
+volumes:
+  osticket_db:
