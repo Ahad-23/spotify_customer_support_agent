@@ -1,259 +1,176 @@
-# SpotifyCares AI Support Platform
+# CentrAlign AI Employee: Autonomous Enterprise Task Worker
 
-A Case-Based Reasoning (CBR) customer support platform with real-time Human-in-the-Loop (HITL) handoff. Powered by **LangGraph**, **Pinecone Serverless** vector search, **FastAPI + WebSockets**, **React 19**, and **React Native / Expo**.
+An autonomous AI task worker prototype built for enterprise operations. It accepts high-level natural language instructions, autonomously plans multi-step execution sequences, drives real enterprise software (osTicket) via browser automation, dynamically observes and adapts to errors in real time, and independently verifies outcomes with visual screenshot evidence.
 
 ---
 
-## System Architecture
+## 1. System Architecture
+
+The solution implements a **Hierarchical Two-Tier StateGraph Architecture** that decouples general computer-use task execution from domain-specific intelligence.
+
+### 1.1 End-to-End System & Runtime Topology
 
 ```mermaid
 flowchart TD
-    subgraph Clients["Frontend Clients"]
-        WEB["React 19 Web App (Vite)\n• Customer Chat (/)\n• Agent Console (/agent)"]
-        MOB["React Native Mobile App (Expo)\n• Customer Chat Screen\n• Agent Dashboard Screen"]
+    subgraph Client["Presentation Layer (React 19 + Vite)"]
+        UI["Task Dashboard (/tasks)\n• Live Action Log Timeline\n• Real-Time WebSocket Streaming\n• Screenshot Lightbox & Evidence Gallery\n• Interactive Approval / Clarification Modal"]
     end
 
-    subgraph API["Backend (FastAPI + SQLite)"]
-        REST["REST Endpoints\n/api/sessions, /api/agents"]
-        WS["WebSocket Manager\n/ws/sessions/{id}, /ws/agents"]
-        DB[(SQLite / support.db\nSessions, Messages, Tickets)]
+    subgraph API["Backend Service Layer (FastAPI + SQLite)"]
+        REST["Task Management API\n• POST /api/tasks (Dispatch)\n• GET /api/tasks/{id} (Poll)\n• POST /api/tasks/{id}/resume (Approval)"]
+        WS["WebSocket Streaming\n• /ws/tasks (Live step logs)"]
+        DB[(SQLite Task Store\n• Status, Plan DAG, Evidence, Memory)]
     end
 
-    subgraph Core["Agent Core (LangGraph)"]
-        IA["Intent & Sentiment Analyzer\n• Device detection\n• Frustration scoring (LiteLLM)"]
-        CR["Case Retriever (CBR)\n• Pinecone Serverless (Cosine)\n• multilingual-e5-large (1024d)"]
-        SG["Solution Generator\n• Groq / Gemini / OpenAI\n• Deterministic Fallback"]
-        HITL["HITL Escalation Node\n• Structured Ticket Dispatch\n• SPOTIFY-T2-#####"]
+    subgraph WorkerCore["Tier 1: Autonomous Task Worker (src/worker/graph.py)"]
+        PLANNER["1. Planner Node\n• Intent Decomposition\n• Ordered DAG Generation"]
+        EXECUTOR["2. Executor Node\n• Tool Dispatching\n• Param Token Substitution"]
+        OBSERVER["3. Observer Node\n• Live DOM Inspection\n• Real-Time Adaptive Recovery"]
+        VERIFIER["4. Verifier Node\n• Independent DOM Inspection\n• Visual Evidence Capture"]
+        REPORTER["5. Reporter Node\n• Markdown Summary\n• Metric Compilation"]
+        CLARIFIER["6. Clarifier Gate\n• Pauses for Operator Approval"]
     end
 
-    WEB <-->|REST & WS| API
-    MOB <-->|REST & WS| API
-    API <--> Core
+    subgraph Tools["Execution & Intelligence Tool Registry"]
+        BROWSER["Browser Tool (Playwright)\n• Headless Chromium Engine\n• Progressive Candidate Discovery\n• DOM Event Dispatching"]
+        SUPPORT["Support Agent Tool (CBR RAG)\n• Invokes Tier-2 Domain Brain\n• Intent + Pinecone Retrieval"]
+        HTTP_TOOL["HTTP API Tool (httpx)\n• REST Integration"]
+    end
+
+    subgraph EnterpriseApp["Target Enterprise Environment (Docker)"]
+        OSTICKET["osTicket Helpdesk v1.15\n• http://localhost:8088/scp\n• Ticket Queues, Users, Tasks, Dashboard"]
+        MARIADB[("MariaDB 10.11\n• Persistent DB State")]
+    end
+
+    UI <-->|REST & WS| API
+    API <--> WorkerCore
     API --- DB
-
-    IA -->|Billing / Account Security| HITL
-    IA -->|Frustration >= 0.5 / Agent Request| HITL
-    IA -->|Standard Troubleshooting| CR
-    CR -->|Relevance < 0.70| HITL
-    CR -->|Relevance >= 0.70| SG
-    HITL -.->|Real-time alert| Clients
+    EXECUTOR --> Tools
+    VERIFIER --> BROWSER
+    BROWSER <-->|Playwright Automation| OSTICKET
+    OSTICKET --- MARIADB
 ```
 
 ---
 
-## Tech Stack
+### 1.2 Core Execution & Adaptive Recovery Lifecycle
 
-| Layer | Technologies |
-|---|---|
-| **Web Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4, Marked, DOMPurify |
-| **Mobile Frontend** | React Native, Expo SDK 57, React Navigation, Expo Constants, AsyncStorage |
-| **Backend** | FastAPI, Uvicorn, SQLAlchemy, SQLite, WebSockets, Pydantic v2 |
-| **Agent & Inference** | LangGraph, LiteLLM (Groq `gpt-oss-120b`, Gemini `gemini-3.8-flash`, OpenAI `gpt-4o-mini`) |
-| **Search & Retrieval** | Pinecone Serverless, multilingual-e5-large (1024d dense vectors via Pinecone Inference) |
-| **Data & Tooling** | `uv`, Polars, PyArrow, Rich, Pytest |
+The Task Worker executes tasks through a **Closed-Loop Act-Observe-Decide Cycle**:
 
----
+```mermaid
+flowchart TD
+    START([User Natural Language Task]) --> P[Planner Node]
+    
+    P -->|Ambiguous Request| CLARIFY[Clarification Gate\nStatus: awaiting_user]
+    CLARIFY -->|Human Input Provided| P
+    
+    P -->|Valid DAG Generated| EXEC[Executor Node\nExecute Step i]
+    
+    subgraph ClosedLoop["Closed-Loop Real-Time Recovery Cycle"]
+        EXEC --> OBS[Observer Node\nInspect Live Output & Errors]
+        OBS -->|Step Succeeded| CHECK_MORE{More Steps in Plan?}
+        CHECK_MORE -->|Yes| NEXT_STEP[Increment step_index] --> EXEC
+        
+        OBS -->|Step Failed / Stumbled| ADAPT{Retries < Max Retries?}
+        ADAPT -->|Yes: Alternative Selector / Text Match| INJECT[Inject alternative_params / steps] --> EXEC
+        ADAPT -->|No: Unrecoverable| CLARIFY
+    end
 
-## Project Structure
-
-```
-customer_support_agent/
-├── backend/                  # FastAPI service & persistence layer
-│   ├── database.py           # SQLite engine & session factory
-│   ├── models.py             # SQLAlchemy models (ChatSession, ChatMessage, HitlTicket)
-│   ├── schemas.py            # Pydantic request/response schemas
-│   ├── routers/
-│   │   ├── sessions.py       # Customer chat session endpoints
-│   │   ├── agents.py         # Agent console ticket & message endpoints
-│   │   └── ws.py             # WebSocket routes (/ws/sessions, /ws/agents)
-│   ├── services/
-│   │   ├── chat_service.py   # Agent execution wrapper & session state sync
-│   │   └── websocket_manager.py # Real-time pub/sub connection manager
-│   └── main.py               # FastAPI entrypoint, dynamic CORS & static mount
-├── frontend-web/             # React 19 SPA (Spotify dark theme)
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── CustomerChat.tsx   # Customer conversational interface
-│   │   │   └── AgentDashboard.tsx # HITL agent queue & live chat takeover
-│   │   ├── components/       # MessageBubble, TicketCard, ChatInput, MarkdownContent
-│   │   ├── hooks/            # useWebSocket hook
-│   │   └── api/client.ts     # Typed fetch client
-│   ├── vite.config.ts        # Vite dev server with /api and /ws proxy
-│   └── package.json
-├── frontend-mobile/          # React Native / Expo app (Spotify dark theme)
-│   ├── src/
-│   │   ├── screens/
-│   │   │   ├── CustomerChatScreen.tsx   # Mobile chat with live server switcher
-│   │   │   └── AgentDashboardScreen.tsx # Mobile HITL agent queue & takeover
-│   │   ├── components/       # MessageBubble, ChatInput, TicketCard
-│   │   ├── hooks/            # useWebSocket auto-reconnecting hook
-│   │   └── api/client.ts     # Dynamic host discovery client (Expo Constants)
-│   ├── App.tsx               # Native Stack Navigation entrypoint
-│   ├── .env                  # Optional EXPO_PUBLIC_API_BASE_URL override
-│   └── package.json
-├── src/                      # Core agent & RAG pipeline
-│   ├── agent/
-│   │   ├── graph.py          # LangGraph StateGraph & conditional edge routing
-│   │   ├── nodes.py          # Analyzer, retriever, generator, escalation nodes
-│   │   ├── prompts.py        # System instructions & brand tone constraints
-│   │   ├── sentiment.py      # LLM sentiment engine with LRU query caching
-│   │   └── state.py          # SupportAgentState schema
-│   ├── rag/
-│   │   ├── indexer.py        # Pinecone Serverless index & bulk upsert lifecycle
-│   │   ├── retriever.py      # Pinecone dense vector retriever with metadata filtering
-│   │   └── embeddings.py     # Pinecone Inference embedding client (multilingual-e5-large)
-│   ├── data/                 # Dataset preprocessing & PII extraction pipeline
-│   └── eval/                 # LLM-as-a-judge evaluation suite
-├── data/                     # Local SQLite database & processed datasets
-├── tests/                    # Unit and integration test suites
-├── main.py                   # CLI entrypoint (interactive, query, eval, indexing)
-└── pyproject.toml
+    CHECK_MORE -->|All Steps Complete| VERIFY[Verifier Node\nIndependent DOM Query & Screenshot]
+    
+    VERIFY -->|Verified: Status Correct| REPORT[Reporter Node\nCompile Summary & Artifacts]
+    VERIFY -->|Unverified: Status Still Open| REPORT_FAIL[Reporter Node\nFlag Failure & Unresolved State]
+    
+    REPORT --> DONE([Task Completed + Verified Evidence])
+    REPORT_FAIL --> FAILED([Task Failed + Detailed Diagnostic])
 ```
 
 ---
 
-## Quickstart
+### 1.3 State Node Responsibilities
 
-### 1. Environment Configuration
+| State Node | Module Path | Core Responsibilities |
+|---|---|---|
+| **Planner** | [`src/worker/planner.py`](file:///c:/Users/Ahad/Documents/repos/customer_support_agent/src/worker/planner.py) | Analyzes natural language instructions, detects ambiguity, structures goal definition, and generates an ordered sequence of typed `PlanStep` actions. |
+| **Executor** | [`src/worker/executor.py`](file:///c:/Users/Ahad/Documents/repos/customer_support_agent/src/worker/executor.py) | Resolves dynamic memory variables (`{last_output}`, `{support_response}`, `{ticket_reply_status}`), enforces security credentials, and dispatches actions to tool implementations. |
+| **Observer** | [`src/worker/observer.py`](file:///c:/Users/Ahad/Documents/repos/customer_support_agent/src/worker/observer.py) | Closed-loop feedback controller: inspects tool execution output, detects errors/timeouts, and dynamically generates alternative selectors or steps in real time without aborting the task. |
+| **Verifier** | [`src/worker/verifier.py`](file:///c:/Users/Ahad/Documents/repos/customer_support_agent/src/worker/verifier.py) | Independently formulates verification checks, inspects actual live DOM entity states (e.g., verifying `Status: Resolved` vs `Status: Open`), captures screenshot evidence, and rejects false-positive completions. |
+| **Reporter** | [`src/worker/reporter.py`](file:///c:/Users/Ahad/Documents/repos/customer_support_agent/src/worker/reporter.py) | Compiles structured Markdown execution summaries, action counts, retry metrics, and attached screenshot galleries for human operators. |
 
-Create `.env` in the root directory:
+---
+
+## 2. Setup & Run Instructions
+
+### Prerequisites
+- **Python 3.11+** with [`uv`](https://github.com/astral-sh/uv)
+- **Node.js 18+** & `npm`
+- **Docker Desktop** (for running osTicket & MariaDB)
+
+---
+
+### Step 1: Environment Configuration
+Create a `.env` file in the root directory (or copy `.env.example`):
 
 ```env
-# Pinecone Serverless Configuration
+# LLM Provider Keys (Groq / Gemini / OpenAI via LiteLLM)
+GROQ_API_KEY="gsk_..."
+GROQ_MODEL="groq/openai/gpt-oss-120b"
+GEMINI_API_KEY="AQ..."
+GEMINI_MODEL="gemini-3.8-flash"
+LLM_MODEL="groq/openai/gpt-oss-120b"
+FALLBACK_MODELS="groq/openai/gpt-oss-20b,groq/qwen/qwen3.8-27b"
+
+# osTicket Helpdesk Integration
+OSTICKET_URL="http://localhost:8088"
+OSTICKET_STAFF_USER="ostadmin"
+OSTICKET_STAFF_PASS="Admin1"
+
+# Vector Search (Optional for Domain Brain)
 PINECONE_API_KEY="pcsk_..."
 PINECONE_INDEX_NAME="spotify-support-cases"
-PINECONE_CLOUD="aws"
-PINECONE_REGION="us-east-1"
-
-# Primary LLM Provider (Default: Groq)
-GROQ_API_KEY="gsk_..."
-GROQ_MODEL="openai/gpt-oss-120b"
-
-# Optional LLM Providers
-GEMINI_API_KEY="AIzaSy..."
-GEMINI_MODEL="gemini-3.8-flash"
-OPENAI_API_KEY="sk-..."
-OPENAI_MODEL="gpt-4o-mini"
-
-# Retrieval Threshold (Cosine similarity: 0.0 to 1.0)
-RAG_CONFIDENCE_THRESHOLD=0.70
 ```
 
 ---
 
-### 2. Run Backend & Frontend Applications
+### Step 2: Start Services
 
-#### Terminal 1 — Backend (FastAPI + WebSockets)
+#### 1. Start osTicket Helpdesk (Docker)
+```bash
+docker compose -f osticket/docker-compose.yml up -d
+```
+*osTicket is accessible at `http://localhost:8088` (Staff Control Panel at `http://localhost:8088/scp`).*
+
+#### 2. Start Backend API (FastAPI + WebSockets)
 ```bash
 uv sync
-uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn backend.main:app --reload --port 8000
 ```
-*Note: Binding to `0.0.0.0` allows physical mobile devices on your Wi-Fi or mobile hotspot to connect.*
 
-#### Terminal 2 — Web Frontend (React 19 + Vite)
+#### 3. Start Frontend Web App (React 19 + Vite)
 ```bash
 cd frontend-web
 npm install
 npm run dev
 ```
-* **Customer Chat**: [http://localhost:5173](http://localhost:5173)
-* **Agent Console**: [http://localhost:5173/agent](http://localhost:5173/agent)
-* **API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-#### Terminal 3 — Mobile Frontend (React Native / Expo)
+---
+
+### Step 3: Access Interfaces
+- **Autonomous Task Dashboard:** [`http://localhost:5173/tasks`](http://localhost:5173/tasks) — Interactive task runner with live step execution traces, screenshot lightbox, and manual approval gates.
+- **Customer Chat & HITL Console:** [`http://localhost:5173`](http://localhost:5173) and [`http://localhost:5173/agent`](http://localhost:5173/agent).
+- **FastAPI OpenAPI Documentation:** [`http://localhost:8000/docs`](http://localhost:8000/docs).
+
+---
+
+### Step 4: Run Automated Tests
 ```bash
-cd frontend-mobile
-npm install
-npx expo start
-```
-Scan the QR code with **Expo Go** on iOS or Android, or press:
-* `a` — Android emulator
-* `i` — iOS simulator
-* `w` — Web browser preview
-
-**Mobile Connection & Auto-Discovery**:
-* The mobile app uses **dynamic host resolution** via `expo-constants`. When opening via Expo Go, it automatically extracts your development machine's IP without requiring any manual IP configuration.
-* Tap **⚙️ Server** in the top-right header of the mobile app to switch between:
-  * **Auto-detected Host** (Wi-Fi / Hotspot IP)
-  * **Android Emulator** (`http://10.0.2.2:8000`)
-  * **Localhost** (`http://localhost:8000`)
-  * Custom API URL
-* **Mobile Hotspot / Windows Note**: If your laptop is connected to your phone's mobile hotspot, ensure your Wi-Fi network profile in Windows Settings is set to **Private** so Windows Defender Firewall permits incoming connections on port 8000.
-
----
-
-### 3. Run CLI Interface
-
-```bash
-# Interactive multi-turn CLI session
-uv run python main.py
-
-# Single-query execution
-uv run python main.py -q "Spotify keeps skipping tracks on my Anker bluetooth speaker"
-```
-
----
-
-## Human-in-the-Loop (HITL) Workflow
-
-The system uses a **dual-checkpoint gate** to decide when human intervention is required:
-
-1. **Pre-Retrieval Gate**:
-   - Intent: Account security, billing disputes, or credentials.
-   - Sentiment: Frustration score $\ge 0.5$, sarcastic tone, or explicit requests for a representative.
-2. **Post-Retrieval Gate**:
-   - RAG Confidence: Cosine similarity score $< 0.70$ against historical cases.
-
-```
-Customer triggers HITL
-  └─► Agent generates Ticket (e.g. SPOTIFY-T2-78412)
-  └─► Saved to SQLite (status: hitl_pending)
-  └─► WebSocket event (hitl_new) broadcast to /ws/agents
-  └─► Agent Console (Web & Mobile) displays ticket with diagnostics
-  └─► Agent clicks "Claim Ticket" (status: human_active)
-  └─► Live two-way WebSocket chat takeover between customer and human agent
-  └─► Agent marks "Resolve" (status: closed)
-```
-
----
-
-## Knowledge Base & Pinecone Setup
-
-To rebuild the vector index from raw Twitter customer support data:
-
-1. **Place raw dataset**: Download [Customer Support on Twitter](https://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter) and place `twcs.csv` in `dataset/twcs.csv`.
-2. **Extract & Clean Threads**:
-   ```bash
-   uv run python src/data/extract_spotify_threads.py --input dataset/twcs.csv --output_dir data/processed
-   ```
-3. **Index into Pinecone**:
-   ```bash
-   uv run python main.py --index --recreate
-   ```
-
-### Cosine Similarity Scoring
-
-$$\text{Score} = \text{Cosine}(v_q, v_d)$$
-
-- **Score $< 0.70$**: Low relevance match $\rightarrow$ intercepted and escalated to HITL.
-- **Score $0.70 - 0.85$**: Moderate semantic match $\rightarrow$ synthesized into step-by-step guidance.
-- **Score $\ge 0.85$**: High-confidence match $\rightarrow$ verified device-specific resolution.
-
----
-
-## Testing & Evaluation
-
-```bash
-# Run full test suite
+# Run all 169 unit & integration tests
 uv run pytest
-
-# Run targeted subsystem tests
-uv run pytest tests/test_hitl_escalation.py -v
-uv run pytest tests/test_agent_graph.py -v
-uv run pytest tests/test_retriever.py -v
-
-# Run LLM-as-a-Judge benchmark evaluation
-uv run python main.py --eval
-# or
-uv run python src/eval/llm_judge.py
 ```
+
+---
+
+## 3. In-Depth Technical Documentation
+
+For complete technical specifications, design decisions, known limitations, assumptions, future roadmap, and component breakdowns, refer to:
+👉 **[AUTONOMOUS_WORKER_TECHNICAL_DOCS.md](AUTONOMOUS_WORKER_TECHNICAL_DOCS.md)**

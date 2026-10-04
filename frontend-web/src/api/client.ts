@@ -84,7 +84,45 @@ export const api = {
       `/api/agents/sessions/${sessionId}/messages?agent_name=${encodeURIComponent(agentName)}`,
       { method: "POST", body: JSON.stringify({ content }) }
     ),
+
+  createTask: (task: string) =>
+    request<TaskResponse>("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ task }),
+    }),
+
+  getTask: (taskId: string) =>
+    request<TaskResponse>(`/api/tasks/${taskId}`),
+
+  resumeTask: (taskId: string, userInput: string) =>
+    request<TaskResponse>(`/api/tasks/${taskId}/resume`, {
+      method: "POST",
+      body: JSON.stringify({ user_input: userInput }),
+    }),
 };
+
+export interface TaskStep {
+  index: number;
+  description: string;
+  tool: string;
+  params?: Record<string, unknown>;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  result?: string | null;
+  error?: string | null;
+  retries?: number;
+}
+
+export interface TaskResponse {
+  id: string;
+  status: string;
+  summary: string;
+  verified?: boolean | null;
+  evidence: string[];
+  clarification?: string | null;
+  plan: TaskStep[];
+  memory: Record<string, unknown>;
+  task?: string;
+}
 
 export function wsUrl(path: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";

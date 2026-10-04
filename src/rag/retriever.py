@@ -20,6 +20,7 @@ import dotenv
 from pinecone import Pinecone
 
 from src.rag.embeddings import PineconeEmbeddingService
+from src.data.cleaner import sanitize_solution_text
 
 dotenv.load_dotenv(REPO_ROOT / ".env")
 
@@ -121,12 +122,14 @@ class CaseRetriever:
                 continue
 
             src = match.metadata or {}
+            raw_res = src.get("resolution", "")
+            clean_res = sanitize_solution_text(raw_res) or raw_res
             case = RetrievedCase(
                 case_id=src.get("case_id", match.id),
                 score=score,
                 intent=src.get("intent", "general_inquiry"),
                 customer_problem=src.get("customer_message", ""),
-                resolution=src.get("resolution", ""),
+                resolution=clean_res,
                 conversation=src.get("conversation", ""),
                 metadata=src,
             )

@@ -1,12 +1,14 @@
 import { Link, Route, Routes } from "react-router-dom";
 import AgentDashboard from "./pages/AgentDashboard";
 import CustomerChat from "./pages/CustomerChat";
+import TaskDashboard from "./pages/TaskDashboard";
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<CustomerChat />} />
       <Route path="/agent" element={<AgentDashboard />} />
+      <Route path="/tasks" element={<TaskDashboard />} />
       <Route
         path="*"
         element={

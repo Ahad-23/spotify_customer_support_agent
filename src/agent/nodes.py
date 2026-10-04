@@ -2,12 +2,15 @@
 LangGraph nodes for SpotifyCares support workflow.
 """
 
+import logging
 import os
 from pathlib import Path
 import re
 import sys
 import dotenv
 import litellm
+
+logger = logging.getLogger(__name__)
 
 from typing import Any, Dict, List, Optional
 
@@ -23,8 +26,10 @@ from src.agent.prompts import (
     SPOTIFY_SYSTEM_PROMPT,
 )
 from src.agent.state import SupportAgentState
+from src.data.cleaner import sanitize_solution_text
 from src.data.intent_classifier import classify_intent
 from src.rag.retriever import CaseRetriever
+from src.worker.config import safe_llm_completion
 
 dotenv.load_dotenv(REPO_ROOT / ".env")
 
@@ -172,7 +177,7 @@ def case_retriever_node(state: SupportAgentState) -> Dict[str, Any]:
         matches = retriever.retrieve(query=state.current_query, top_k=3)
 
     cases_dicts = [m.to_dict() for m in matches]
-    best_res = matches[0].resolution if matches else ""
+    best_res = sanitize_solution_text(matches[0].resolution) if matches else ""
     top_score = matches[0].score if matches else 0.0
 
     threshold = float(os.getenv("RAG_CONFIDENCE_THRESHOLD", "0.70"))
@@ -196,18 +201,29 @@ def solution_generator_node(state: SupportAgentState) -> Dict[str, Any]:
     """
     Synthesizes an empathetic, actionable SpotifyCares response based on retrieved case evidence.
     """
-    # Build evidence text from retrieved cases
+    # Build evidence text from retrieved cases (sanitized to remove raw customer names/tweets)
     evidence_lines = []
     for i, c in enumerate(state.retrieved_cases, 1):
+        clean_res = sanitize_solution_text(c.get("resolution", ""))
         evidence_lines.append(
             f"Case #{i} (Score: {c.get('score', 0):.2f}):\n"
             f"  Customer Problem: {c.get('customer_problem')}\n"
-            f"  Proven Resolution: {c.get('resolution')}\n"
+            f"  Proven Technical Steps: {clean_res}\n"
         )
     case_evidence = "\n".join(evidence_lines) if evidence_lines else "No specific historical match found."
 
+    # Format dialogue history if multiple turns exist
+    conversation_history = ""
+    if len(state.messages) > 1:
+        history_lines = []
+        for m in state.messages[:-1]:
+            role = "Customer" if m.get("role") == "customer" else "Spotify Support"
+            history_lines.append(f"{role}: {m.get('content', '').strip()}")
+        conversation_history = "\nPrevious Conversation History:\n" + "\n".join(history_lines) + "\n"
+
     prompt_content = SOLUTION_GENERATION_PROMPT.format(
         customer_query=state.current_query,
+        conversation_history=conversation_history,
         intent=state.intent,
         case_evidence=case_evidence,
     )
@@ -225,55 +241,68 @@ def solution_generator_node(state: SupportAgentState) -> Dict[str, Any]:
     response_text = ""
     if has_llm_key:
         try:
-            # Determine model: Groq is default, Gemini and OpenAI are options
-            model = os.getenv("LLM_MODEL") or os.getenv("AGENT_MODEL")
+            # Determine model: Groq is default, Gemini is fallback
+            model = os.getenv("LLM_MODEL") or os.getenv("AGENT_MODEL") or os.getenv("GROQ_MODEL")
             if not model:
                 if os.getenv("GROQ_API_KEY"):
-                    groq_m = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-                    model = f"groq/{groq_m}" if not groq_m.startswith("groq/") else groq_m
+                    model = "groq/openai/gpt-oss-120b"
                 elif os.getenv("GEMINI_API_KEY"):
                     gem_m = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
                     model = f"gemini/{gem_m}" if not gem_m.startswith("gemini/") else gem_m
-                elif os.getenv("OPENAI_API_KEY"):
-                    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
                 else:
                     model = "groq/openai/gpt-oss-120b"
+            elif "gpt-oss" in model and not model.startswith("groq/"):
+                model = f"groq/{model}"
 
-            llm_res = litellm.completion(
+            fallbacks = [m.strip() for m in os.getenv("FALLBACK_MODELS", "").split(",") if m.strip()]
+            effective_fallbacks = [f for f in fallbacks if f != model]
+
+            llm_res = safe_llm_completion(
                 model=model,
                 messages=[
                     {"role": "system", "content": SPOTIFY_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt_content},
                 ],
                 temperature=0.3,
-                max_tokens=800,
+                max_tokens=600,
+                fallbacks=effective_fallbacks if effective_fallbacks else None,
             )
             response_text = llm_res.choices[0].message.content.strip()
-        except Exception:
-            # Fall back to template synthesis on error
+        except Exception as exc:
+            logger.error("LLM synthesis failed, falling back to clean template: %s", exc)
             response_text = ""
 
-    # Intelligent template synthesis fallback (zero external API key needed)
+    # Intelligent template synthesis fallback (zero external API key needed, never outputs raw tweet artifacts)
     if not response_text:
-        if state.best_resolution:
-            # Clean up resolution if it starts with greetings
-            clean_sol = state.best_resolution
-            for prefix in ["Hi there!", "Hey there!", "Hi!", "Hey!"]:
-                if clean_sol.startswith(prefix):
-                    clean_sol = clean_sol[len(prefix) :].strip()
-
-            response_text = (
-                f"Hey there! Thanks for reaching out to Spotify Support. Let's get this sorted for you.\n\n"
-                f"Based on similar historical issues with {state.intent.replace('_', ' ')}, here are the recommended steps to try:\n"
-                f"- {clean_sol}\n\n"
-                f"Does that make a difference? If you're still having trouble, let us know your exact device and app version so we can investigate further!"
-            )
+        is_followup = len(state.messages) > 1
+        clean_sol = sanitize_solution_text(state.best_resolution) if state.best_resolution else ""
+        if clean_sol:
+            if is_followup:
+                response_text = (
+                    "Thanks for keeping us updated! Let's continue with the next troubleshooting step:\n\n"
+                    f"1. {clean_sol}\n\n"
+                    "Please give this a try and let us know if the issue persists!"
+                )
+            else:
+                formatted_intent = state.intent.replace("_", " ").title() if state.intent else "Spotify"
+                response_text = (
+                    f"Hey there! Thanks for reaching out to Spotify Support. We're here to help get your {formatted_intent} back on track.\n\n"
+                    f"To troubleshoot this, please try the following steps:\n\n"
+                    f"1. {clean_sol}\n\n"
+                    "Does that make a difference? If you're still having trouble, let us know your exact device and app version so we can investigate further!"
+                )
         else:
-            response_text = (
-                "Hey there! Thanks for reaching out to Spotify Support.\n\n"
-                "Could you let us know what device, operating system, and Spotify version you're currently using? "
-                "Also, does restarting your device or logging out and back in help at all? Keep us posted!"
-            )
+            if is_followup:
+                response_text = (
+                    "Thanks for the update! Let's try performing a clean reinstall of Spotify next to refresh cache and local library data. "
+                    "Make sure to restart your device right after uninstalling before reinstalling from the official store."
+                )
+            else:
+                response_text = (
+                    "Hey there! Thanks for reaching out to Spotify Support.\n\n"
+                    "Could you let us know what device, operating system, and Spotify version you're currently using? "
+                    "Also, does restarting your device or logging out and back in help at all? Keep us posted!"
+                )
 
 
     updated_messages = list(state.messages)

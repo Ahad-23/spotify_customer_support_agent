@@ -99,3 +99,55 @@ def analyze_agent_response(text: str) -> Tuple[bool, bool]:
     has_troubleshoot = bool(TROUBLESHOOTING_PATTERN.search(text))
 
     return is_deflect, has_troubleshoot
+
+
+def sanitize_solution_text(text: str) -> str:
+    """
+    Cleans raw historical support resolutions into neutral, actionable troubleshooting
+    steps without historical customer names (e.g. 'Harry'), Twitter handles, or sign-offs.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    s = html.unescape(text).strip()
+
+    # 1. Remove agent signatures (/AY, ^RR, etc.)
+    s = SIGNATURE_PATTERN.sub("", s)
+
+    # 2. Remove leading @mentions
+    s = LEADING_MENTIONS_PATTERN.sub("", s)
+
+    # 3. Remove personalized customer greetings: e.g. "Hi Harry!", "Hey there,", "Hello Sarah -"
+    s = re.sub(r"^(?:Hi|Hey|Hello|Dear)\s+[\w\s.-]+?[!.,:\-–]\s*", "", s, flags=re.I)
+
+    # 4. Remove support intro slogans: e.g. "Help's here.", "Spotify Support here!", "We're here to help."
+    s = re.sub(r"^(?:Help's here|Help is here|Spotify Support here|Spotify here|We're here to help)[!.,:\-–]\s*", "", s, flags=re.I)
+
+    # 5. Remove trailing sign-offs: e.g. "Keep us posted!", "Let us know how it goes", "Cheers"
+    s = re.sub(
+        r"(?:Keep us posted|Let us know(?: how it goes| once you've given this a shot)?|Let me know|Hope this helps|Cheers|Keep us updated)[!.,:]?\s*$",
+        "",
+        s,
+        flags=re.I,
+    )
+
+    # 6. Convert action arrow notations: e.g. "logging out > restarting your device > logging back in"
+    def _arrow_action_replacer(match: re.Match) -> str:
+        parts = [p.strip() for p in match.group(0).split(">") if p.strip()]
+        if len(parts) >= 2 and any(p.lower().endswith("ing") for p in parts):
+            return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+        return match.group(0)
+
+    s = re.sub(r"[\w\s]+(?:\s*>\s*[\w\s]+){2,}", _arrow_action_replacer, s)
+
+    # 7. Normalize brand mentions & whitespace
+    s = BRAND_MENTION_PATTERN.sub("Spotify", s)
+    s = INTERNAL_MENTION_PATTERN.sub("user", s)
+    s = WHITESPACE_PATTERN.sub(" ", s).strip()
+
+    # 8. Ensure capitalization
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+
+    return s
+

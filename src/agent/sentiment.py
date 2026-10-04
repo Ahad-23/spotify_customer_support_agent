@@ -10,6 +10,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 import litellm
+from src.worker.config import safe_llm_completion
 
 
 SENTIMENT_ANALYZER_PROMPT = """You are an expert customer experience and sentiment analyzer for Spotify Support.
@@ -20,7 +21,7 @@ Analyze the message across these dimensions:
    - Detect subtle frustration, sarcasm (e.g. "love paying for silence", "great another useless restart"), and passive-aggression.
 2. "frustration_score": Float from 0.0 (calm/happy) to 1.0 (extremely angry/furious).
 3. "is_human_requested": Boolean. True if customer explicitly or implicitly asks to talk to a human, person, agent, or representative.
-4. "is_repeated_failure": Boolean. True if customer states that previous troubleshooting steps, restarts, reinstalls, or automated advice did not work or failed.
+4. "is_repeated_failure": Boolean. True if customer states that previous troubleshooting steps, restarts, reinstalls, advice, or suggestions did not work, didn't fix the issue, or problem persists (e.g. "didn't fix it", "didn't work", "already tried", "still greyed out", "still crashing").
 5. "unhelpful_prior_answer": Boolean. True if the customer complains that the previous answer was inappropriate, irrelevant, or didn't answer their question.
 6. "trigger_hitl": Boolean. True if the interaction requires escalation to a Human-in-the-Loop Tier-2 Specialist (triggered if: human requested, repeated failures, frustration_score >= 0.5, or previous answer was unhelpful).
 7. "hitl_reason": Short string explanation for why human escalation was triggered, or null if trigger_hitl is false.
@@ -51,18 +52,17 @@ def _get_cache_key(query: str, history: Optional[List[Dict[str, str]]] = None, p
 
 
 def get_sentiment_model() -> str:
-    """Returns configured model for sentiment analysis: Groq default, Gemini/OpenAI options."""
-    model = os.getenv("SENTIMENT_MODEL") or os.getenv("LLM_MODEL") or os.getenv("AGENT_MODEL")
+    """Returns configured model for sentiment analysis: defaults to groq/openai/gpt-oss-120b."""
+    model = os.getenv("SENTIMENT_MODEL") or os.getenv("LLM_MODEL") or os.getenv("AGENT_MODEL") or os.getenv("GROQ_MODEL")
     if model:
+        if "gpt-oss" in model and not model.startswith("groq/"):
+            return f"groq/{model}"
         return model
     if os.getenv("GROQ_API_KEY"):
-        m = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-        return f"groq/{m}" if not m.startswith("groq/") else m
+        return "groq/openai/gpt-oss-120b"
     if os.getenv("GEMINI_API_KEY"):
         m = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
         return f"gemini/{m}" if not m.startswith("gemini/") else m
-    if os.getenv("OPENAI_API_KEY"):
-        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     return "groq/openai/gpt-oss-120b"
 
 
@@ -114,15 +114,19 @@ def analyze_customer_sentiment(
 
             user_prompt = f"{conv_context}Latest Customer Message:\n\"{text.strip()}\"\nPrior Failed Troubleshooting Turns: {previous_failed_count}"
 
-            llm_res = litellm.completion(
+            fallbacks = [m.strip() for m in os.getenv("FALLBACK_MODELS", "").split(",") if m.strip()]
+            effective_fallbacks = [f for f in fallbacks if f != model]
+
+            llm_res = safe_llm_completion(
                 model=model,
                 messages=[
                     {"role": "system", "content": SENTIMENT_ANALYZER_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.0,
-                max_tokens=600,
+                max_tokens=400,
                 response_format={"type": "json_object"},
+                fallbacks=effective_fallbacks if effective_fallbacks else None,
             )
             raw_content = llm_res.choices[0].message.content.strip()
             data = json.loads(raw_content)
@@ -135,10 +139,15 @@ def analyze_customer_sentiment(
             trigger_hitl = bool(data.get("trigger_hitl", False))
             hitl_reason = data.get("hitl_reason")
 
-            is_frustrated = frustration_score >= 0.4 or sentiment_tag in ["frustrated", "urgent"]
+            lower_text = text.lower()
+            if any(f in lower_text for f in ["didn't fix", "did not fix", "didn't work", "did not work", "already tried", "already did", "still greyed out"]):
+                is_repeated_failure = True
+                is_frustrated = True
+                frustration_score = max(frustration_score, 0.6)
+                trigger_hitl = True
 
             result = {
-                "sentiment": sentiment_tag,
+                "sentiment": "frustrated" if is_frustrated else sentiment_tag,
                 "is_frustrated": is_frustrated,
                 "is_repeated_failure": is_repeated_failure,
                 "is_human_requested": is_human_requested,
